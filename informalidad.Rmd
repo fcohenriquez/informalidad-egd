@@ -1,0 +1,324 @@
+---
+title: "Estimacion de la informalidad en Chile usando modelo de equilibrio general dinamico (EGD)"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: fill
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(pracma)
+library(dplyr)
+library(ggplot2)
+library(DT)
+
+library(patchwork)
+
+gen_infor <- function(modelo_EGD_0, alfa, delta, gamma, ano_calib, por_calib) {
+  sis_eq <- function(p) {
+    s_theta_S <- p[1]
+    s_ns <- p[2]
+    aux1 <- s_theta_F * (s_stock_k^alfa) * (s_nf^(1 - alfa))
+    aux2 <- gamma / ((1 - s_carga) * (1 - alfa) * s_theta_F)
+    aux3 <- (((1 + s_g_cp) / beta - 1 + delta) / (alfa * (1 - s_carga) * s_theta_F))^(alfa / (1 - alfa))
+    
+    return(c((s_theta_S * (s_ns^gamma) / aux1) - por_calib, 
+             (s_theta_S * aux2 * aux3)^(1 / (1 - gamma)) - s_ns))
+  }
+  
+  modelo_EGD <- modelo_EGD_0
+  
+  modelo_EGD <- rbind(modelo_EGD, data.frame(fecha = modelo_EGD$fecha[which.max(modelo_EGD$fecha)] + 1, stock_k=0, fbc=0, cp=0, pib_real = 0, rec_total=0, pib_nom=0, nf=0))
+  
+
+  modelo_EGD$carga <- modelo_EGD$rec_total / modelo_EGD$pib_nom
+  modelo_EGD$g_cp <- modelo_EGD$cp / lag(modelo_EGD$cp)
+  modelo_EGD$r_pib_k <- modelo_EGD$pib_real / modelo_EGD$stock_k
+  modelo_EGD$abeta <- (lead(modelo_EGD$cp, 1)/modelo_EGD$cp)/((1-modelo_EGD$carga)*alfa*lead(modelo_EGD$r_pib_k,1)+1-delta)
+  
+  beta <- mean(modelo_EGD$abeta, na.rm =T)
+ 
+  
+  modelo_EGD$theta_F <- modelo_EGD$pib_real / (modelo_EGD$stock_k^alfa * modelo_EGD$nf^(1 - alfa))
+  
+  modelo_EGD$crec_theta_S <- ((modelo_EGD$stock_k / lag(modelo_EGD$stock_k,1)) + modelo_EGD$theta_F / lag(modelo_EGD$theta_F,1)) / 2
+  
+  valores_orig <- modelo_EGD
+  
+  # Obtaining values to calibrate the pivot year
+  s_theta_F<-valores_orig[which(valores_orig$fecha == ano_calib),'theta_F']
+  s_carga<-valores_orig[which(valores_orig$fecha == ano_calib),'carga']
+  s_stock_k<-valores_orig[which(valores_orig$fecha == ano_calib),'stock_k']
+  s_nf<-valores_orig[which(valores_orig$fecha == ano_calib),'nf']
+  s_g_cp<-valores_orig[which(valores_orig$fecha == ano_calib),'g_cp']
+
+
+  result <- fsolve(sis_eq, c(s_theta_S = 1000, s_ns = 4000))
+  s_theta_S <- as.numeric(result$x[1])
+  
+  s_ns <- as.numeric(result$x[2])
+
+  
+  #valores_orig$theta_S <- ifelse(valores_orig$fecha == ano_calib, s_theta_S, NA)
+  valores_orig$theta_S[valores_orig$fecha == ano_calib] <- s_theta_S
+  
+  
+  # Calculating values for the remaining years
+  for (f in seq(which(valores_orig$fecha == ano_calib) -1, 1, -1)) {
+    valores_orig$theta_S[f] <- valores_orig$theta_S[f + 1] / valores_orig$crec_theta_S[f + 1]
+  }
+  
+  for (f in seq(which(valores_orig$fecha == ano_calib)+1, nrow(valores_orig))) {
+    valores_orig$theta_S[f] <- valores_orig$theta_S[f - 1] * valores_orig$crec_theta_S[f]
+  }
+  
+  valores_orig$ns <- (((gamma * valores_orig$theta_S) / ((1 - valores_orig$carga) * (1 - alfa) * valores_orig$theta_F)) * 
+                        (((1 + valores_orig$g_cp) / beta - 1 + delta) / (alfa * (1 - valores_orig$carga) * valores_orig$theta_F))^(alfa / (1 - alfa)))^(1 / (1 - gamma))
+  
+  valores_orig$informalidad <- (valores_orig$theta_S * valores_orig$ns^gamma) / 
+    (valores_orig$theta_F * valores_orig$stock_k^alfa * valores_orig$nf^(1 - alfa))
+  
+  valores_orig$informalidad <- valores_orig$informalidad * 100
+  
+  return(valores_orig)
+}
+
+
+#modelo_EGD_0 <- read.csv("/cloud/project/modelo_EGD.csv")
+modelo_EGD_0<-data.frame(fecha=c(2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023),
+                stock_k=c(276879.174892985, 292620.600688454, 309938.489014954, 331080.194786826, 347218.06165299, 356338.733967367, 378854.590080197, 404264.344169939, 427223.784809145, 448283.71333938, 468350.098264928, 486461.20720916, 502352.337001474, 520029.398047014, 537999.766158642, 551170.870687433, 569599.938981409, 588594.00501827, 605432.838568261),
+                fbc=c(25087.57342, 26706.35254, 29529.69171, 35044.41927, 31169.34979, 34631.23846, 39848.76184, 44634.59829, 45224.48862, 43391.1457, 43437.55851, 42412.43929, 41002.10428, 43664.34414, 45622.92286, 40680.27009, 47171.15469, 49022.34069, 48478.7427),
+                cp=c(63223.95901, 67782.56381, 72182.15402, 74488.11139, 74113.83112, 82553.93694, 90159.87865, 95898.93976, 101027.5711, 103419.58, 105894.3045, 109391.3679, 113277.9367, 117562.1591, 118424.8785, 109646.7513, 132661.1593, 134839.9054, 127826.8428),
+                pib_real=c(120347.7565, 127628.7847, 134224.9351, 139311.2451, 137753.6935, 145814.559, 154889.9066, 164423.907, 169863.8855, 172908.9496, 176629.8508, 179726.2405, 182166.3753, 189434.8674, 190636.5807, 178924.8704, 199204.1384, 203305.2339, 203750.0264),
+                rec_total=c(11184791, 13220515, 16165759, 16473295, 13346556, 17577714, 21101202, 22770029.71, 22953042.73, 24485055.79, 27677815.89, 28998166.9, 30754067.04, 34304059.01, 34579222.39, 32302484.25, 45312420.91, 55407519.53, 49740805.9),
+                pib_nom=c(68467.93984, 81577.53348, 90159.47921, 93867.1213, 96138.47728, 110777.8669, 121509.2985, 129973.394, 137309.192, 147951.29, 158622.9029, 168764.6879, 179314.9101, 189434.8674, 195531.7225, 201257.7451, 239561.9814, 263842.6609, 281870.3206),
+                nf=c(4733.085646, 4829.090556, 4996.336469, 5269.109053, 5279.647354, 5379.715399, 5651.639946, 5887.924604, 5983.332034, 6041.485278, 6151.613547, 6170.244961, 6166.735746, 6288.415917, 6423.707525, 5844.661404, 6050.294477, 6451.122202, 6602.925314))
+
+
+
+modelo_EGD_0$rec_total=modelo_EGD_0$rec_total/1000
+
+
+```
+
+Estimacion
+==========================================================
+
+Column {data-width=300}
+-----------------------------------------------------------------------
+
+### Parametros
+
+```{r}
+
+
+sliderInput('delta', 'Delta (Depreciacion)', min=0, max=0.5,
+            value=0.06, step=0.005)
+
+sliderInput('alfa', 'Alfa (elast Capital)', min=0, max=0.5,
+            value=0.36, step=0.005)
+
+sliderInput('gamma', 'Gamma (elast Informal)', min=0, max=0.5,
+            value=0.24, step=0.005)
+
+
+#delta=0.06 #Tasa de depreciación
+#delta<-as.numeric(input$delta)
+#ano_calib=2018
+#por_calib=0.187179431915283 #en esta version se recoge la ultima estimacion disponible para Chile de la Informalidad MIMIC del Banco Mundial (https://www.worldbank.org/en/research/brief/informal-economy-database)
+
+ano_calib=2020
+por_calib=0.194429550170898 #en esta version se recoge la ultima estimacion disponible para Chile de la Informalidad MIMIC del Banco Mundial (https://www.worldbank.org/en/research/brief/informal-economy-database)
+
+
+#alfa=0.36
+#gamma=0.24
+
+
+
+# OJO: los datos estan desde 2006, 1 año despues de los datos con los que se calcula la informalidad!!!
+TablaInform <- reactive({
+  bd_inform <- gen_infor(modelo_EGD_0, input$alfa, input$delta, input$gamma, ano_calib, por_calib)
+  bd_inform <- slice(bd_inform, 2:(n() - 1)) # 2:(n() - 1)
+  bd_inform$ns_ine <- c(rep(NA, 12),2497, 2546, 2005, 2255, 2413, 2469)
+bd_inform$wb_egd <- c( 18.7630729675292, 18.5014019012451, 18.1242771148681, 17.8175010681152, 17.5897216796875, 17.3459548950195, 17.1445236206054, 16.9169769287109, 16.6886501312255, 16.501594543457, 16.3070316314697, 16.187572479248, 16.035810470581, 15.9090757369995, 15.384328842163, rep(NA, 3))
+bd_inform$wb_mimic <- c( 18.7785148620605, 18.5052394866943, 18.6778411865234, 19.1559181213378, 18.7336883544921, 18.4139347076416, 18.1595306396484, 18.040298461914, 18.1687984466552, 18.1721763610839, 18.3246555328369, 18.4128799438476, 18.3745002746582, 18.4097995758056, 19.4429550170898, rep(NA, 3))
+bd_inform$inf_orig=c(18.3556096098458, 18.3240107442276, 18.2609628712117, 18.4653804621181, 18.3978005623313, 18.1621515956421, 17.8319171164256, 17.8009872959747, 17.9379206232024, 18.1603082205219, 18.305654892022, 18.4600131810349, 18.3153263791232, 18.4216311716821, 19.4429550170897, 19.2161303767038, 18.8419553894901, 18.4870620751135)
+bd_inform$crec_ns<-bd_inform$ns/lag(bd_inform$ns,1)-1
+bd_inform$crec_ns_ine<-bd_inform$ns_ine/lag(bd_inform$ns_ine,1)-1
+ bd_inform$fecha<-as.integer(bd_inform$fecha)
+  bd_inform
+
+  
+})
+
+
+
+#renderTable
+
+renderDT({
+  tail(subset(round(TablaInform(), digits=3), select=c(fecha, ns, informalidad)), n=10)
+  
+} , 
+extensions = c('Buttons'), 
+options = list(
+  dom = 'Bfrtip',
+  buttons = c('copy', 'csv', 'excel')),
+  rownames= FALSE,
+  colnames=c('año', 'Trab. Inf\n(miles)', 'Informalidad')
+)
+
+
+
+
+```
+
+Column {data-width=900}
+-----------------------------------------------------------------------
+
+### Informalidad en Chile
+```{r}
+
+
+renderPlot({
+
+p_inf<-ggplot(TablaInform(), aes(x=fecha, y=informalidad, colour="informalidad"))+
+          geom_line()+
+          geom_point()+
+          geom_line(aes(x=fecha, y=inf_orig, colour="inf_orig"), linetype=2)+
+   scale_x_continuous(breaks = seq(2006, 2023,1))+
+        ggtitle("Informalidad en Chile")
+
+
+p_nf<-ggplot(subset(TablaInform(), fecha<=2020), aes(x=fecha, y=informalidad, colour="informalidad"))+
+          geom_line(size=1.5)+
+          geom_point(shape=18, size=3)+
+          geom_line(aes(x=fecha, y=wb_egd, colour="wb_egd"))+
+          geom_point(aes(x=fecha, y=wb_egd, colour="wb_egd"))+
+          geom_line(aes(x=fecha, y=wb_mimic, colour="wb_mimic"))+
+          geom_point(aes(x=fecha, y=wb_mimic, colour="wb_mimic"))+
+        scale_x_continuous(breaks = seq(2006, 2020,2))+
+        ggtitle("Compracion con Estim. de Banco Mundial")
+
+p_ns<-ggplot(subset(TablaInform(), fecha>=2018), aes(x=fecha, y=ns, colour="ns"))+
+          geom_line(size=1.5)+
+          geom_point(shape=18, size=3)+
+          geom_line(aes(x=fecha, y=ns_ine, colour="ns_ine"))+
+          geom_point(aes(x=fecha, y=ns_ine, colour="ns_ine"))+
+          
+        ggtitle("Compracion del Trabajo Informal con INE")
+
+p_inf / (p_nf | p_ns)
+})
+
+
+
+
+```
+
+Column {data-width=300}
+-----------------------------------------------------------------------
+
+### Correlacion con Informalidad EGD Banco Mundial
+
+```{r}
+
+
+
+renderGauge({
+    gauge(round(cor(TablaInform()$informalidad, TablaInform()$wb_egd, use="complete.obs")*100, 4), 
+            min = 0, 
+          max = 100, 
+          sectors = gaugeSectors(success = c(80, 100), 
+                                 warning = c(60, 80),
+                                 danger = c(0, 60)) )
+  })
+
+
+
+```
+
+### Correlacion con Informalidad MIMIC Banco Mundial
+
+```{r}
+
+renderGauge({
+    gauge(round(cor(TablaInform()$informalidad, TablaInform()$wb_mimic, use="complete.obs")*100, 4), 
+            min = 0, 
+          max = 100, 
+          sectors = gaugeSectors(success = c(80, 100), 
+                                 warning = c(60, 80),
+                                 danger = c(0, 60)) )
+  })
+
+```
+
+### Correlacion de Trabajo Informal con estimacion INE
+
+```{r}
+
+renderGauge({
+    gauge(round(cor(TablaInform()$ns, TablaInform()$ns_ine, use="complete.obs")*100, 4), 
+            min = 0, 
+          max = 100, 
+          sectors = gaugeSectors(success = c(80, 100), 
+                                 warning = c(60, 80),
+                                 danger = c(0, 60)) )
+  })
+
+
+```
+
+### Correlacion del Crecimiento del Trabajo Informal con estimacion INE
+
+```{r}
+
+renderGauge({
+    gauge(round(cor(TablaInform()$crec_ns, TablaInform()$crec_ns_ine, use="complete.obs")*100, 4), 
+            min = 0, 
+          max = 100, 
+          sectors = gaugeSectors(success = c(80, 100), 
+                                 warning = c(60, 80),
+                                 danger = c(0, 60)) )
+  })
+
+
+```
+
+Notas
+==========================================================
+
+
+### Notas
+
+La metodología está basada en estos papers:
+
+Elgin, C. and Oztunali, O. (2012). Shadow economies around the World: Model based estimates. Working Paper 2012/05, Department of Economics, Bogazici University.
+
+Elgin, C., Kose, A., Ohnsorge, F.,andYu,S.(2021). Understanding informality. CAMA Working
+Paper 76/2021, Centre for Applied Macroeconomic Analysis, The Australian National University.
+
+
+El detalle del cálculo empleado está en la estimación de informalidad para Honduras:
+
+
+https://github.com/SAR-DEFE/Informalidad/blob/main/informalidad_hond_v1.ipynb
+
+
+Las fuentes utilizadas son las siguientes:
+
+1. Se considera el pib nominal empalmado desde 1990 hasta 2023, referencia 2018. Dato obtenido en mayo de 2024.
+2. Se considera PIB real y formación bruta de capital real (a precios del año anterior encadenado) empalmados desde 1990 hasta 2023, referencia 2018. Dato obtenido en mayo de 2024.
+3.  Se considera el consumo de los hogares a precios del año anterior encadenado (cp) empalmados desde 1996 hasta 2023, referencia 2018. Dato obtenido en mayo de 2024. Para el período 1990-1995, se consideró el valor real de la compilación de referencia de 1986 empalmada con la compilación de referencia 2018 en el año 1996.
+4.  El stock de capital a precios constantes para el período 1990-2023. Se toma del Stock de capital neto por tipo de activo. Está en miles de millones de pesos constantes. Dato obtenido en mayo de 2024.
+5. nf: Cantidad de ocupados multiplicado por tasa de formales segun Elgin 2021 según  metodología vigente , desde 2010 hasta 2017, y con la metodología desactualizada entre 1986 y 2009. Para el período 2010-2017 se utiliza el promedio de los ocupados mensuales. Para 2018-2023 se utiliza la cantidad de trabajadores formales según el INE. Dato obtenido en mayo de 2024.
+
+
+
+Se utilizó el año 2020 como pivote, considerando la informalidad estimada con la metodología MIMIC del paper Elgin, C., Kose, A., Ohnsorge, F.,andYu,S.(2021) (0.194429550170898). Este valor se encuentra en esta página:
+
+https://www.worldbank.org/en/research/brief/informal-economy-database
+
+
